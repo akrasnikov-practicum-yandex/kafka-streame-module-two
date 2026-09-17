@@ -53,6 +53,7 @@ practicum-java/
 ├── docker-compose.yml       Kafka (KRaft) + приложение + ksqlDB + Kafka UI
 ├── ksqldb-queries.sql       задание 2: запросы аналитики
 ├── QUICKSTART.md            пошаговый запуск с нуля (bash и PowerShell)
+├── ARCHITECTURE.md          структура проекта, классы и методы, sequence-диаграммы
 ├── test-data/               тестовые сообщения, блокировки и слова
 └── src/
     ├── build.gradle.kts
@@ -228,6 +229,9 @@ docker run --rm -v "$(pwd):/work" -w /work gradle:8.7-jdk21 gradle --no-daemon t
 разблокировка, цензура, tombstone, обе стадии вместе, содержимое state store.
 
 ## Классы и параметры
+
+> Разбор каждого метода, карта файлов и sequence-диаграммы потока обработки —
+> в [ARCHITECTURE.md](ARCHITECTURE.md).
 
 | Класс | Назначение |
 |---|---|
