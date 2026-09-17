@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <!-- .NET 8, а не 10: Streamiz заявляет поддержку по .NET 8 включительно. -->
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <RootNamespace>Practicum.Kafka.Streams</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Порт Kafka Streams на .NET: те же примитивы (StreamBuilder, KStream,
+         KTable, state stores), включая persistent-хранилище поверх RocksDB. -->
+    <PackageReference Include="Streamiz.Kafka.Net" Version="1.8.1" />
+    <PackageReference Include="Serilog.Extensions.Logging" Version="8.0.0" />
+    <PackageReference Include="Serilog.Sinks.Console" Version="6.0.0" />
+  </ItemGroup>
+
+</Project>

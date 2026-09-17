@@ -1,0 +1,6 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="Practicum.Kafka.Streams/Practicum.Kafka.Streams.csproj" />
+    <Project Path="Practicum.Kafka.Streams.Tests/Practicum.Kafka.Streams.Tests.csproj" />
+  </Folder>
+</Solution>

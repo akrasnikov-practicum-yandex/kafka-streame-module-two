@@ -1,0 +1,143 @@
+# Kafka в режиме KRaft (без ZooKeeper) + приложение Kafka Streams + ksqlDB.
+#
+# Профили управляют тем, что поднимается: топики по заданию создаются вручную,
+# поэтому приложение не должно стартовать раньше них.
+#   без профиля — только брокер (поднимается по умолчанию);
+#   apps        — приложение потоковой обработки;
+#   ksqldb      — ksqlDB (задание 2, дополнительное);
+#   tools       — веб-интерфейс Kafka UI.
+
+networks:
+  practicum-kafka-net:
+    driver: bridge
+
+volumes:
+  kafka-data:
+  streams-state:
+
+services:
+  kafka:
+    image: confluentinc/cp-kafka:7.6.0
+    container_name: practicum3-kafka
+    networks: [practicum-kafka-net]
+    ports:
+      # Внешний листенер — для подключения с хост-машины.
+      - "9092:9092"
+    environment:
+      # --- KRaft ---
+      # Один узел совмещает роли брокера и контроллера: отдельный кворум
+      # контроллеров нужен в проде, а для учебного стенда это лишние контейнеры.
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      # Кворум контроллеров: <node-id>@<host>:<порт CONTROLLER-листенера>.
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:29093
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      # Идентификатор кластера. В KRaft хранилище форматируется этим значением,
+      # поэтому оно должно быть постоянным: при смене придётся удалять volume.
+      CLUSTER_ID: FfrGbFVoRzihwQ4CD5pZOA
+
+      # --- Листенеры ---
+      # PLAINTEXT (29092) — обращения изнутри docker-сети, EXTERNAL (9092) — с хоста,
+      # CONTROLLER (29093) — служебный трафик кворума KRaft.
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:29092,EXTERNAL://0.0.0.0:9092,CONTROLLER://0.0.0.0:29093
+      # Адреса, которые брокер сообщает клиентам. Контейнеры обращаются по имени
+      # сервиса, хост — по localhost. Поэтому команды kafka-topics внутри контейнера
+      # используют kafka:29092, а не localhost:9092.
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,EXTERNAL://localhost:9092
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+
+      # --- Топики ---
+      # Брокер один, поэтому у служебных топиков не может быть больше одной реплики.
+      # Без этих трёх настроек Kafka Streams не сможет создать свои внутренние топики:
+      # значение по умолчанию (3) недостижимо на одноузловом кластере.
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      # Автосоздание выключено: топики создаются вручную, причём banned_words —
+      # обязательно с cleanup.policy=compact. Созданный автоматически топик получил бы
+      # обычную политику удаления, и справочник слов терялся бы по retention.
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      # Задержка первой ребалансировки. По умолчанию 3 с — на старте приложения
+      # это лишнее ожидание на ровном месте.
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD-SHELL", "kafka-broker-api-versions --bootstrap-server localhost:29092"]
+      interval: 10s
+      timeout: 10s
+      retries: 15
+
+  messaging-streams-app:
+    build:
+      context: ./src
+      dockerfile: Practicum.Kafka.Streams/Dockerfile
+    container_name: practicum3-streams-app
+    profiles: ["apps"]
+    networks: [practicum-kafka-net]
+    depends_on:
+      kafka: {condition: service_healthy}
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      # application.id — он же group.id консьюмер-группы и префикс имён
+      # служебных топиков и каталога состояния.
+      KAFKA_APPLICATION_ID: practicum3-messaging-streams
+      # Каталог persistent state store (RocksDB). Вынесен в volume: иначе
+      # «persistent» терялся бы при пересоздании контейнера.
+      KAFKA_STATE_DIR: /var/lib/streams-state
+      # Уровень логирования Serilog: Verbose, Debug, Information, Warning, Error.
+      LOG_LEVEL: ${LOG_LEVEL:-Information}
+    volumes:
+      - streams-state:/var/lib/streams-state
+    restart: unless-stopped
+    # Запас на аккуратное закрытие: при остановке приложение досылает буферы,
+    # коммитит смещения и отпускает партиции. Дефолтных 10 с может не хватить.
+    stop_grace_period: 30s
+
+  # Веб-интерфейс: топики, содержимое сообщений, группы и лаг.
+  # docker compose --profile tools up -d kafka-ui
+  kafka-ui:
+    image: provectuslabs/kafka-ui:v0.7.0
+    container_name: practicum3-kafka-ui
+    profiles: ["tools"]
+    networks: [practicum-kafka-net]
+    depends_on:
+      kafka: {condition: service_healthy}
+    ports:
+      - "8080:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: practicum-3
+      KAFKA_CLUSTERS_0_BOOTSTRAP_SERVERS: kafka:29092
+
+  # --- Задание 2 (дополнительное): аналитика через ksqlDB ---
+  # docker compose --profile ksqldb up -d
+  ksqldb-server:
+    image: confluentinc/cp-ksqldb-server:7.6.0
+    container_name: practicum3-ksqldb-server
+    profiles: ["ksqldb"]
+    networks: [practicum-kafka-net]
+    depends_on:
+      kafka: {condition: service_healthy}
+    ports:
+      - "8088:8088"
+    environment:
+      KSQL_BOOTSTRAP_SERVERS: kafka:29092
+      KSQL_LISTENERS: http://0.0.0.0:8088
+      KSQL_KSQL_SERVICE_ID: practicum3_
+      # Брокер один — реплицировать внутренние топики ksqlDB не на что.
+      KSQL_KSQL_INTERNAL_TOPIC_REPLICAS: 1
+      KSQL_KSQL_STREAMS_REPLICATION_FACTOR: 1
+      # Читать топики с начала: иначе запросы увидят только те сообщения,
+      # что придут после создания потока, и тестовые данные окажутся невидимы.
+      KSQL_KSQL_STREAMS_AUTO_OFFSET_RESET: earliest
+
+  ksqldb-cli:
+    image: confluentinc/cp-ksqldb-cli:7.6.0
+    container_name: practicum3-ksqldb-cli
+    profiles: ["ksqldb"]
+    networks: [practicum-kafka-net]
+    depends_on: [ksqldb-server]
+    # Контейнер должен просто ждать, пока в него зайдут интерактивно.
+    entrypoint: /bin/sh
+    tty: true
