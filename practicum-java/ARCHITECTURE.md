@@ -10,6 +10,9 @@
 ## Содержание
 
 - [Карта файлов](#карта-файлов)
+- [C4: контекст (Level 1)](#c4-контекст-level-1)
+- [C4: контейнеры (Level 2)](#c4-контейнеры-level-2)
+- [C4: компоненты (Level 3)](#c4-компоненты-level-3)
 - [Слои и зависимости](#слои-и-зависимости)
 - [Классы и методы](#классы-и-методы)
   - [MessagingStreamsApp](#messagingstreamsapp)
@@ -81,6 +84,233 @@ practicum-java/
 > **Нестандартная раскладка Gradle.** Корень Gradle-проекта — сама папка `src/`,
 > поэтому исходники лежат в `src/main/java`, а не в `src/src/main/java`. Это задано
 > явно в `build.gradle.kts` через `sourceSets`.
+
+---
+
+## C4: контекст (Level 1)
+
+Система целиком и всё, что с ней взаимодействует. Внутреннее устройство на этом
+уровне намеренно скрыто — видно только границу.
+
+```mermaid
+graph TB
+    subgraph ext[" "]
+        User["👤 <b>Пользователь чата</b><br/><i>[Person]</i><br/>Отправляет сообщения,<br/>блокирует нежелательных отправителей"]
+        Moder["👤 <b>Модератор</b><br/><i>[Person]</i><br/>Ведёт список запрещённых слов"]
+        Analyst["👤 <b>Аналитик</b><br/><i>[Person]</i><br/>Смотрит статистику переписки"]
+    end
+
+    System["<b>Сервис обмена сообщениями</b><br/><i>[Software System]</i><br/>Доставляет сообщения между пользователями,<br/>отсеивает заблокированных отправителей<br/>и маскирует запрещённые слова"]
+
+    User -->|"Отправляет сообщения<br/>и команды block/unblock"| System
+    Moder -->|"Добавляет и удаляет<br/>запрещённые слова"| System
+    System -->|"Доставляет отфильтрованные<br/>и отцензурированные сообщения"| User
+    Analyst -->|"Запрашивает агрегаты<br/>по потоку сообщений"| System
+
+    style System fill:#1168bd,stroke:#0b4884,color:#fff
+    style User fill:#08427b,stroke:#052e56,color:#fff
+    style Moder fill:#08427b,stroke:#052e56,color:#fff
+    style Analyst fill:#08427b,stroke:#052e56,color:#fff
+    style ext fill:none,stroke:none
+```
+
+В учебном стенде все три роли играет один человек через консольные утилиты Kafka:
+пользователь и модератор — `kafka-console-producer`, аналитик — `ksqlDB CLI`.
+Отдельного клиентского приложения в работе нет, оно вне границ задания.
+
+## C4: контейнеры (Level 2)
+
+Из чего система собрана и как части общаются. Каждый контейнер — отдельный
+процесс в `docker-compose.yml`; топики Kafka показаны как хранилища данных,
+потому что для этой системы они и есть persistent-слой.
+
+```mermaid
+graph TB
+    User["👤 <b>Пользователь / Модератор</b><br/><i>[Person]</i>"]
+    Analyst["👤 <b>Аналитик</b><br/><i>[Person]</i>"]
+
+    subgraph boundary["Сервис обмена сообщениями"]
+        direction TB
+
+        App["<b>messaging-streams-app</b><br/><i>[Container: Java 21 + Kafka Streams 3.7]</i><br/>Блокировка отправителей и цензура слов.<br/>Один граф обработки в одном процессе"]
+
+        subgraph stores["Локальное состояние (RocksDB)"]
+            BStore[("<b>blocked-users-store</b><br/><i>[Container: RocksDB]</i><br/>user → множество<br/>заблокированных им")]
+            WStore[("<b>banned-words-store</b><br/><i>[Container: RocksDB, global]</i><br/>слово → маркер")]
+        end
+
+        Broker["<b>Kafka broker</b><br/><i>[Container: confluentinc/cp-kafka 7.6, KRaft]</i><br/>Транспорт и хранение всех топиков"]
+
+        subgraph topics["Топики"]
+            TMsg[("messages<br/><i>key = recipient_id</i>")]
+            TFiltered[("filtered_messages<br/><i>результат обработки</i>")]
+            TBlocked[("blocked_users<br/><i>команды block/unblock</i>")]
+            TWords[("banned_words<br/><i>compacted, слово = ключ</i>")]
+        end
+
+        Ksql["<b>ksqlDB</b><br/><i>[Container: cp-ksqldb-server 7.6]</i><br/>Агрегаты по потоку сообщений<br/><i>профиль ksqldb, задание 2</i>"]
+        UI["<b>Kafka UI</b><br/><i>[Container: provectuslabs/kafka-ui]</i><br/>Просмотр топиков, групп и лага<br/><i>профиль tools, необязательный</i>"]
+    end
+
+    User -->|"Пишет записи<br/><i>kafka-console-producer</i>"| Broker
+    Broker -->|"Читает результат<br/><i>kafka-console-consumer</i>"| User
+    Analyst -->|"SQL-запросы<br/><i>ksqlDB CLI, HTTP :8088</i>"| Ksql
+
+    Broker --- topics
+
+    TMsg -->|"читает<br/><i>Kafka protocol</i>"| App
+    TBlocked -->|"читает<br/><i>Kafka protocol</i>"| App
+    TWords -->|"читает<br/><i>Kafka protocol</i>"| App
+    App -->|"пишет<br/><i>Kafka protocol</i>"| TFiltered
+
+    App -->|"читает и пишет<br/><i>локально</i>"| BStore
+    App -->|"читает и пишет<br/><i>локально</i>"| WStore
+    BStore -.->|"changelog-топик<br/><i>восстановление</i>"| Broker
+
+    Ksql -->|"читает messages<br/><i>Kafka protocol</i>"| Broker
+    UI -->|"метаданные и записи<br/><i>Kafka protocol</i>"| Broker
+
+    style App fill:#1168bd,stroke:#0b4884,color:#fff
+    style Broker fill:#1168bd,stroke:#0b4884,color:#fff
+    style Ksql fill:#4b8fd4,stroke:#0b4884,color:#fff
+    style UI fill:#7fa8d4,stroke:#0b4884,color:#fff
+    style BStore fill:#438dd5,stroke:#2e6295,color:#fff
+    style WStore fill:#438dd5,stroke:#2e6295,color:#fff
+    style TMsg fill:#438dd5,stroke:#2e6295,color:#fff
+    style TFiltered fill:#438dd5,stroke:#2e6295,color:#fff
+    style TBlocked fill:#438dd5,stroke:#2e6295,color:#fff
+    style TWords fill:#438dd5,stroke:#2e6295,color:#fff
+    style User fill:#08427b,stroke:#052e56,color:#fff
+    style Analyst fill:#08427b,stroke:#052e56,color:#fff
+    style boundary fill:none,stroke:#0b4884,stroke-dasharray: 5 5
+    style stores fill:none,stroke:#999,stroke-dasharray: 3 3
+    style topics fill:none,stroke:#999,stroke-dasharray: 3 3
+```
+
+Что важно прочитать с этой диаграммы:
+
+| Наблюдение | Почему так |
+|---|---|
+| Между `messages` и `filtered_messages` нет промежуточного топика | Блокировка и цензура — два шага **одного** графа в одном процессе, а не два сервиса |
+| `banned_words` — единственный compacted-топик | Это состояние, а не поток событий: важно текущее содержимое списка, а не история |
+| `banned-words-store` помечен `global` | Каждый экземпляр приложения держит полную копию справочника |
+| У `blocked-users-store` есть changelog, у `banned-words-store` — нет | Первый восстанавливается из служебного changelog-топика, второй перечитывается из исходного `banned_words` |
+| ksqlDB читает `messages`, а не `filtered_messages` | Статистика считается по всем отправленным сообщениям, включая отброшенные блокировкой |
+| ksqlDB и Kafka UI поднимаются профилями | Не нужны для задания 1; стенд по умолчанию — только брокер |
+
+Порты наружу: `9092` (брокер, внешний листенер), `8088` (ksqlDB), `8080` (Kafka UI).
+Внутри docker-сети брокер доступен как `kafka:29092`.
+
+## C4: компоненты (Level 3)
+
+Устройство контейнера `messaging-streams-app` изнутри: из каких компонентов он
+состоит, кто кого вызывает и через какие узлы топологии проходит запись.
+
+```mermaid
+graph TB
+    TMsg[("<b>messages</b><br/><i>[Topic]</i>")]
+    TBlocked[("<b>blocked_users</b><br/><i>[Topic]</i>")]
+    TWords[("<b>banned_words</b><br/><i>[Topic, compacted]</i>")]
+    TOut[("<b>filtered_messages</b><br/><i>[Topic]</i>")]
+
+    subgraph app["Контейнер: messaging-streams-app"]
+        direction TB
+
+        Main["<b>MessagingStreamsApp</b><br/><i>[Component: main]</i><br/>Жизненный цикл KafkaStreams:<br/>старт, обработчик исключений,<br/>shutdown-hook"]
+        Cfg["<b>AppConfig</b><br/><i>[Component: record]</i><br/>Конфигурация из переменных<br/>окружения → Properties"]
+
+        subgraph topo["Топология обработки"]
+            direction TB
+            Builder["<b>MessagingTopology</b><br/><i>[Component: factory]</i><br/>Сборка графа:<br/>leftJoin → filter → processValues → to"]
+            Agg["<b>applyBlockCommand</b><br/><i>[Component: aggregator]</i><br/>Свёртка команд<br/>в множество"]
+            Joiner["<b>dropIfBlocked</b><br/><i>[Component: ValueJoiner]</i><br/>null, если отправитель<br/>заблокирован получателем"]
+            BWU["<b>BannedWordsUpdater</b><br/><i>[Component: Processor]</i><br/>put / delete по tombstone,<br/>нормализация регистра"]
+            CP["<b>CensorshipProcessor</b><br/><i>[Component: FixedKeyProcessor]</i><br/>Читает справочник,<br/>маскирует текст, не меняет ключ"]
+        end
+
+        WM["<b>WordMasker</b><br/><i>[Component: pure function]</i><br/>Замена слов звёздочками<br/>по границам слов Unicode"]
+
+        subgraph ser["Сериализация"]
+            direction TB
+            Serdes["<b>AppSerdes</b><br/><i>[Component: factory]</i><br/>chatMessage, blockCommand,<br/>stringSet"]
+            Json["<b>JsonSerde&lt;T&gt;</b><br/><i>[Component: Serde]</i><br/>Jackson; ошибка разбора<br/>→ лог + null"]
+        end
+
+        subgraph mdl["Модели"]
+            direction TB
+            Msg["<b>ChatMessage</b><br/><i>[Component: record]</i><br/>user_id, recipient_id,<br/>message, timestamp"]
+            Cmd["<b>BlockCommand</b><br/><i>[Component: record]</i><br/>blocker_id, blocked_id,<br/>action"]
+        end
+
+        BStore[("<b>blocked-users-store</b><br/><i>[RocksDB]</i>")]
+        WStore[("<b>banned-words-store</b><br/><i>[RocksDB, global]</i>")]
+    end
+
+    Main -->|"fromEnvironment()<br/>toStreamsProperties()"| Cfg
+    Main -->|"build(config)"| Builder
+    Builder -->|"читает имена топиков"| Cfg
+
+    TBlocked -->|"Consumed.with"| Json
+    Json -->|"BlockCommand"| Agg
+    Agg -->|"put(user, Set)"| BStore
+    Agg -.->|"использует"| Cmd
+
+    TWords -->|"addGlobalStore"| BWU
+    BWU -->|"put / delete"| WStore
+
+    TMsg -->|"Consumed.with"| Json
+    Json -->|"ChatMessage"| Joiner
+    BStore -->|"get(recipientId)"| Joiner
+    Joiner -->|"не-null записи"| CP
+    Joiner -.->|"использует"| Msg
+
+    CP -->|"mask(text, isBanned)"| WM
+    WM -->|"get(word)"| WStore
+    CP -->|"forward → Produced.with"| Json
+    Json -->|"bytes"| TOut
+
+    Builder -.->|"создаёт"| Joiner
+    Builder -.->|"создаёт"| Agg
+    Builder -.->|"создаёт"| BWU
+    Builder -.->|"создаёт"| CP
+    Builder -->|"Serde для узлов"| Serdes
+    Serdes -->|"new JsonSerde&lt;&gt;"| Json
+
+    style Main fill:#1168bd,stroke:#0b4884,color:#fff
+    style Builder fill:#1168bd,stroke:#0b4884,color:#fff
+    style CP fill:#438dd5,stroke:#2e6295,color:#fff
+    style BWU fill:#438dd5,stroke:#2e6295,color:#fff
+    style Joiner fill:#438dd5,stroke:#2e6295,color:#fff
+    style Agg fill:#438dd5,stroke:#2e6295,color:#fff
+    style WM fill:#85bbf0,stroke:#2e6295,color:#111
+    style Cfg fill:#85bbf0,stroke:#2e6295,color:#111
+    style Serdes fill:#85bbf0,stroke:#2e6295,color:#111
+    style Json fill:#85bbf0,stroke:#2e6295,color:#111
+    style Msg fill:#b3d2f2,stroke:#2e6295,color:#111
+    style Cmd fill:#b3d2f2,stroke:#2e6295,color:#111
+    style BStore fill:#438dd5,stroke:#2e6295,color:#fff
+    style WStore fill:#438dd5,stroke:#2e6295,color:#fff
+    style TMsg fill:#999,stroke:#666,color:#fff
+    style TBlocked fill:#999,stroke:#666,color:#fff
+    style TWords fill:#999,stroke:#666,color:#fff
+    style TOut fill:#999,stroke:#666,color:#fff
+    style app fill:none,stroke:#0b4884,stroke-dasharray: 5 5
+    style topo fill:none,stroke:#999,stroke-dasharray: 3 3
+    style ser fill:none,stroke:#999,stroke-dasharray: 3 3
+    style mdl fill:none,stroke:#999,stroke-dasharray: 3 3
+```
+
+Сплошные стрелки — поток данных во время работы, пунктирные — связи времени
+сборки графа и использования типов.
+
+Три входа в топологию независимы: `blocked_users` наполняет таблицу блокировок,
+`banned_words` — глобальный справочник, и только `messages` идёт по основному
+конвейеру, читая оба хранилища по пути. Выход один — `filtered_messages`.
+
+`WordMasker` — единственный компонент, не связанный с Kafka ни одним типом:
+поэтому он и вынесен отдельно, его проверяет обычный юнит-тест без топологии.
+
+Динамика этих же компонентов — в [sequence-диаграммах](#sequence-диаграммы).
 
 ---
 
