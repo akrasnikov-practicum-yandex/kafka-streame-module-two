@@ -1,0 +1,5 @@
+bob:{"user_id":"alice","recipient_id":"bob","message":"привет, как дела?","timestamp":"2026-09-16T10:00:00Z"}
+bob:{"user_id":"eve","recipient_id":"bob","message":"это сообщение не дойдёт","timestamp":"2026-09-16T10:01:00Z"}
+carol:{"user_id":"alice","recipient_id":"carol","message":"ты дурак, шучу :)","timestamp":"2026-09-16T10:02:00Z"}
+alice:{"user_id":"bob","recipient_id":"alice","message":"всё отлично, спасибо!","timestamp":"2026-09-16T10:03:00Z"}
+alice:{"user_id":"carol","recipient_id":"alice","message":"привет от carol","timestamp":"2026-09-16T10:04:00Z"}

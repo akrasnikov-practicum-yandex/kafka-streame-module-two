@@ -1,0 +1,16 @@
+<configuration>
+    <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder>
+            <pattern>[%d{HH:mm:ss}] [%-5level] [%logger{0}] %msg%n</pattern>
+        </encoder>
+    </appender>
+
+    <!-- Уровень задаётся переменной LOG_LEVEL из docker-compose. -->
+    <root level="${LOG_LEVEL:-INFO}">
+        <appender-ref ref="CONSOLE"/>
+    </root>
+
+    <!-- Внутренняя диагностика клиента Kafka очень подробна и на уровне INFO
+         заглушает логи самого приложения. -->
+    <logger name="org.apache.kafka" level="WARN"/>
+</configuration>
